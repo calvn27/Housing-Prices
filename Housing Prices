@@ -1,0 +1,492 @@
+library(MASS)
+#install.packages("tidyverse")
+library(tidyverse)
+library(glmnet)
+library(pls)
+library(tree)
+library(plyr)
+library(class)
+#install.packages("FNN")
+library(FNN)
+library(gbm)
+library(glmnet)
+#install.packages("rpart")
+library(rpart)
+
+
+
+
+# Read in the train and test data
+library(readr)
+
+df1 <- read.csv("/Users/NickC/Downloads/train-1.csv", header = TRUE)
+dim(df1)
+
+df2 <- read.csv("/Users/NickC/Downloads/test.csv", header = TRUE)
+dim(df2)
+
+
+# Delete zip code from both data sets
+df1 <- subset(df1, select = -c(zipcode))
+#df1
+
+df2 <- subset(df2, select = -c(zipcode))
+#df2
+
+
+
+# Changes character variables to factors
+df1$desc <- as.factor(df1$desc)
+df1$exteriorfinish <- as.factor(df1$exteriorfinish)
+df1$rooftype <- as.factor(df1$rooftype)
+df1$state <- as.factor(df1$state)
+
+#Fills in the means for the N/A 
+df1$fireplaces[is.na(df1$fireplaces)] <- mean(df1$fireplaces, na.rm = TRUE)
+
+
+# Combines Columns in Train Data Set
+df1 <- df1 %>% mutate(
+  desc1 = case_when(
+    desc == "MOBILE HOME" | desc == "ROWHOUSE" ~ "OTHER",
+    desc == "CONDOMINIUM" ~ "CONDOMINIUM",
+    desc == "MULTI-FAMILY" ~ "MULTI-FAMILY",
+    desc == "SINGLE FAMILY" ~ "SINGLE FAMILY",
+  )
+) %>% mutate(
+  exteriorfinish1 = case_when(
+    exteriorfinish == "Concrete" | exteriorfinish == "Log" | exteriorfinish == "Stone" ~ "Other",
+    exteriorfinish == "Brick" ~ "Brick",
+    exteriorfinish == "Frame" ~ "Frame",
+    exteriorfinish == "Stucco" ~ "Stucco"
+  )
+)
+
+#Deletes the old columns
+df1 <- subset(df1, select = -c(desc,exteriorfinish))
+
+# Changes character variables to factors
+df1$desc1 <- as.factor(df1$desc1)
+df1$exteriorfinish1 <- as.factor(df1$exteriorfinish1)
+
+
+
+#Fills in the means for the N/A 
+df2$fireplaces[is.na(df2$fireplaces)] <- mean(df2$fireplaces, na.rm = TRUE)
+
+# Combines Columns in Test Date set
+df2 <- df2 %>% mutate(
+  desc1 = case_when(
+    desc == "MOBILE HOME" | desc == "ROWHOUSE" ~ "OTHER",
+    desc == "CONDOMINIUM" ~ "CONDOMINIUM",
+    desc == "MULTI-FAMILY" ~ "MULTI-FAMILY",
+    desc == "SINGLE FAMILY" ~ "SINGLE FAMILY",
+  )
+) %>% mutate(
+  exteriorfinish1 = case_when(
+    exteriorfinish == "Concrete" | exteriorfinish == "Log" | exteriorfinish == "Stone" ~ "Other",
+    exteriorfinish == "Brick" ~ "Brick",
+    exteriorfinish == "Frame" ~ "Frame",
+    exteriorfinish == "Stucco" ~ "Stucco"
+  )
+)
+
+df2 <- subset(df2, select = -c(desc,exteriorfinish))
+
+#df1
+#df2
+
+
+
+
+# Split the train data 
+sample_size = floor(0.6*nrow(df1))
+set.seed(100)
+
+picked = sample(seq_len(nrow(df1)),size = sample_size)
+
+df1.train <- df1[picked,]
+df1.test <- df1[-picked,]
+
+#df1.train
+#df1.test
+
+
+
+#Full Regression
+set.seed(100)
+fit.full <- lm(price ~ ., data = df1.train[-1])
+#summary(fit.full)
+
+lm.pred <- predict(fit.full, newdata = df1.test)
+mse.full <- mean((pred1 - df1.test$price)^2)
+
+
+
+
+# Forward Step wise
+fit.fwd <- regsubsets(price ~ . - id, data = df1.train, method = "forward")
+#summary(fit.fwd)
+coef.fwd <- coef(fit.fwd, id = 8)
+names(coef.fwd)
+
+
+
+
+# Backwards Step wise
+fit.back <- regsubsets(price ~ . - id, data = df1.train, method = "backward")
+#summary(fit.back)
+coef.back <- coef(fit.back, id = 8)
+names(coef.back)
+
+
+
+# Best Subset
+test.mat <- model.matrix(price ~. - id, data = df1.test)
+
+fit.best <- regsubsets(price ~ . - id, data = df1.train, nvmax = 15)
+
+val.errors = rep(NA,15)
+
+for(i in 1:15){
+  coefi=coef(fit.best, id=i)
+  pred = test.mat[,names(coefi)]%*%coefi
+  val.errors[i] = mean((df1.test$price-pred)^2) 
+}
+
+which.min(val.errors)
+coef(fit.best ,9)
+
+
+
+
+#Linear Model for forward and Backward
+fit1.for.back <- lm(price ~ rooftype + bedrooms + bathrooms + fireplaces + sqft + state + desc1 + exteriorfinish1, data = df1.train[-1])
+#summary(fit1.for.back)
+for.back.pred <- predict(fit1.for.back, newdata = df1.test)
+mse.for.back <- mean((for.back.pred - df1.test$price)^2)
+
+
+
+
+#Linear regression for the best model
+fit1.best <- lm(price ~ rooftype + bedrooms + bathrooms + fireplaces + sqft + state + AvgIncome + desc1 + exteriorfinish1, data = df1.train[-1])
+summary(fit1.best)
+best.pred <- predict(fit1.best, newdata = df1.test)
+mse.best <- mean((best.pred - df1.test$price)^2)
+
+
+#Create a matrix for ridge
+set.seed(5)
+xtrain <- model.matrix(price ~. - id, data = df1.train)
+ytrain <- df1.train$price
+xtest <- model.matrix(price~. - id, data = df1.test)
+ytest <- df1.test$price
+grid <- 10^seq(10,-2,length=10)
+
+
+# Ridge
+set.seed(5)
+fit.ridge <- glmnet(xtrain,df1.train$price, alpha = 0, lambda = grid)
+cv.ridge <- cv.glmnet(xtrain,df1.train$price, alpha = 0, lambda = grid)
+bestlam.ridge <- cv.ridge$lambda.min
+#bestlam.ridge
+ridge.pred <- predict(fit.ridge,s = bestlam.ridge ,newx = xtest)
+mse.ridge <- mean((ridge.pred-ytest)^2)
+
+# Lasso
+set.seed(5)
+fit.lasso <- glmnet(xtrain,ytrain, alpha = 1, lambda = grid)
+cv.lasso <- cv.glmnet(xtrain,ytrain, alpha = 1, lambda = grid)
+bestlam.lasso <- cv.lasso$lambda.min
+#bestlam.lasso
+lasso.pred <- predict(fit.lasso, s = bestlam.lasso, newx = xtest)
+mse.lasso <- mean((lasso.pred - ytest)^2)
+
+
+#PCR
+set.seed(5)
+pcr.fit <- pcr(price ~ . - id, data = df1.train, scale=TRUE, validation="CV")
+validationplot(pcr.fit,val.type="MSEP")
+#summary(pcr.fit)
+pcr.pred <- predict(pcr.fit,df1.test,ncomp = 20)
+mse.pcr <- mean((pcr.pred - df1.test$price)^2)
+
+
+#PLS
+set.seed(5)
+pls.fit <- plsr(price ~. - id, data = df1.train, scale = TRUE, validation = "CV")
+validationplot(pls.fit, val.type = "MSEP")
+#summary(pls.fit)
+pls.pred <- predict(pls.fit,df1.test,ncomp = 7)
+mse.pls <- mean((pls.pred - df1.test$price)^2)
+
+
+
+# Tree
+set.seed(5)
+tree.final <- tree(price ~. - id, data = df1.train)
+summary(tree.final)
+
+#Tree
+set.seed(5)
+plot(tree.final)
+text(tree.final, pretty = 0)
+
+# Tree
+tree.pred <- predict(tree.final, newdata = df1.test)
+mse.tree <- mean((tree.pred - df1.test$price)^2)
+
+
+
+#Pruning
+set.seed(5)
+cv.final <- cv.tree(tree.final)
+plot(cv.final$size, cv.final$dev, type = "b")
+
+
+#Pruning
+set.seed(5)
+
+prune.final <- prune.tree(tree.final ,best = 9)
+plot(prune.final)
+text(prune.final ,pretty=0)
+
+prune.pred <- predict(prune.final ,newdata = df1.test)
+mse.prune <- mean((prune.pred - df1.test$price)^2)
+
+
+
+# Random Forest
+set.seed(5)
+rf <- randomForest(price ~. - id, data = df1.train, mtry=14/3,importance =TRUE)
+rf.pred <- predict(rf ,newdata = df1.test)
+mse.rf <- mean((rf.pred - df1.test$price)^2)
+mse.rf
+
+importance(rf)
+varImpPlot(rf)
+
+
+
+
+#Bag
+set.seed(5)
+bag.final <- randomForest(price ~. - id, data = df1.train, ntree = 500, mtry = 14, importance = TRUE)
+bag.final
+
+bag.pred <- predict(bag.final ,newdata = df1.test)
+mse.bag <- mean((bag.pred - df1.test$price)^2)
+mse.bag
+
+importance(bag.final)
+varImpPlot(bag.final)
+
+
+
+
+# Finding the best lambda for boosting
+set.seed(5)
+pows <- seq(-10, -0.2, by = 0.1)
+lambdas <- 10^pows
+
+for (i in 1:length(lambdas)) {
+  boost <- gbm(price ~ . - id, data = df1.train, distribution = "gaussian", n.trees = 5000, shrinkage = lambdas[i])
+  yhat <- predict(boost, df1.test, n.trees = 5000)
+  test.MSE[i] <- mean((yhat - df1.test$price)^2)
+}
+plot(lambdas, test.MSE, type = "b", xlab = "Shrinkage values", ylab = "Test MSE")
+
+
+# Boost
+set.seed(5)
+
+df1.train$desc1 <- as.factor(df1.train$desc1)
+df1.train$exteriorfinish1 <- as.factor(df1.train$exteriorfinish1)
+
+df1.test$desc1 <- as.factor(df1.test$desc1)
+df1.test$exteriorfinish1 <- as.factor(df1.test$exteriorfinish1)
+
+boost.final <- gbm(price~. - id,data= df1.train, n.trees=5000, shrinkage = lambdas[which.min(test.MSE)])
+
+boost.pred <- predict(boost.final ,newdata = df1.test)
+mse.boost <- mean((boost.pred - df1.test$price)^2)
+
+
+
+
+# Finding the best k for KNN
+set.seed(5)
+
+mse.knn <- rep(NA, 500)
+k <- 1:500
+
+for (i in 1:length(k)) {
+  
+  train.knn <- cbind(df1.train$numstories, df1.train$yearbuilt, df1.train$rooftype, df1.train$basement, df1.train$totalrooms, df1.train$bedrooms, df1.train$bathrooms, df1.train$fireplaces, df1.train$sqft, df1.train$lotarea, df1.train$state, df1.train$zipcode, df1.train$AvgIncome, df1.train$desc1, df1.train$exteriorfinish1 )
+  test.knn <- cbind(df1.test$numstories, df1.test$yearbuilt, df1.test$rooftype, df1.test$basement, df1.test$totalrooms, df1.test$bedrooms, df1.test$bathrooms, df1.test$fireplaces, df1.test$sqft, df1.test$lotarea, df1.test$state, df1.test$zipcode, df1.test$AvgIncome, df1.test$desc1, df1.test$exteriorfinish1)
+  
+  train.price <- df1.train$price
+  test.price <- df1.test$price
+  
+  knn.pred <- knn.reg(train.knn, test.knn, train.price, k=k[i])
+  knn.pred <- knn.pred$pred
+  mse.knn[i] <- mean((test.price - knn.pred)^2)
+  
+}
+
+plot(k, mse, type = "b", xlab = "Shrinkage values", ylab = "MSE")
+
+min.mse <- which.min(mse)
+min.mse
+
+## We Showed that the min MSE is at k = 10
+
+
+
+
+
+# KNN
+set.seed(5)
+
+train.knn <- cbind(df1.train$numstories, df1.train$yearbuilt, df1.train$rooftype, df1.train$basement, df1.train$totalrooms, df1.train$bedrooms, df1.train$bathrooms, df1.train$fireplaces, df1.train$sqft, df1.train$lotarea, df1.train$state, df1.train$zipcode, df1.train$AvgIncome, df1.train$desc1, df1.train$exteriorfinish1 )
+
+test.knn <- cbind(df1.test$numstories, df1.test$yearbuilt, df1.test$rooftype, df1.test$basement, df1.test$totalrooms, df1.test$bedrooms, df1.test$bathrooms, df1.test$fireplaces, df1.test$sqft, df1.test$lotarea, df1.test$state, df1.test$zipcode, df1.test$AvgIncome, df1.test$desc1, df1.test$exteriorfinish1)
+
+train.price <- df1.train$price
+test.price <- df1.test$price
+
+#knn.pred1 <- knn.reg(train.knn, test.knn, train.price, k=1)
+#knn.pred5 <- knn.reg(train.knn, test.knn, train.price, k=5)
+knn.pred10 <- knn.reg(train.knn, test.knn, train.price, k=10)
+#knn.pred100 <- knn.reg(train.knn, test.knn, train.price, k=100)
+
+#knn.pred1 <- knn.pred1$pred
+#knn.pred5 <- knn.pred5$pred
+knn.pred10 <- knn.pred10$pred
+#knn.pred100 <- knn.pred100$pred
+#class(knn.pred)
+#class(test.price)
+
+
+#knn1.mse <- mean((test.price - knn.pred1)^2)
+#knn1.mse
+
+#knn5.mse <- mean((test.price - knn.pred)^2)
+#knn5.mse
+
+knn10.mse <- mean((test.price - knn.pred10)^2)
+knn10.mse
+
+#knn100.mse <- mean((test.price - knn.pred100)^2)
+#knn100.mse
+
+
+
+
+
+
+# Finding R^2
+test.avg <- mean(df1.test$price)
+
+
+lm.r2 <- 1 - mean((lm.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+for.back.r2 <- 1 - mean((for.back.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+best.r2 <- 1 - mean((best.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+ridge.r2 <- 1 - mean((ridge.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+lasso.r2 <- 1 - mean((lasso.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+pcr.r2 <- 1 - mean((pcr.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+pls.r2 <- 1 - mean((pls.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+rf.r2 <- 1 - mean((rf.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+prune.r2 <- 1 - mean((prune.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+tree.r2 <- 1 - mean((tree.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+bag.r2 <- 1 - mean((bag.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+boost.r2 <- 1 - mean((boost.pred - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+knn10.r2 <- 1 - mean((knn.pred10 - df1.test$price)^2) / mean((test.avg - df1.test$price)^2)
+
+
+lm.r2
+for.back.r2
+best.r2
+ridge.r2
+lasso.r2
+pcr.r2
+pls.r2
+rf.r2
+prune.r2
+tree.r2
+bag.r2
+boost.r2
+knn10.r2
+
+
+
+
+
+
+
+#Printing the MSE
+
+mse.full
+mse.for.back
+mse.best
+mse.ridge
+mse.lasso
+mse.pcr
+mse.pls
+mse.tree
+mse.prune
+mse.rf
+mse.bag
+mse.boost
+knn10.mse
+
+
+
+
+
+# Changes character variables to factors in the test set
+df2$desc1 <- as.factor(df2$desc1)
+df2$exteriorfinish1 <- as.factor(df2$exteriorfinish1)
+df2$rooftype <- as.factor(df2$rooftype)
+df2$state <- as.factor(df2$state)
+#df2 <- subset(df2, select = -c(desc,exteriorfinish))
+
+
+#Fills in the means for the N/A 
+df2$fireplaces[is.na(df2$fireplaces)] <- mean(df2$fireplaces, na.rm = TRUE)
+df2$price <- 0
+
+
+
+# Random Forest to get the actual predictions
+set.seed(5)
+
+rf.real <- randomForest(price ~. , data = df1[-1], mtry=14/3,importance =TRUE)
+
+rf.pred.real <- predict(rf.real ,newdata = df2[-1])
+
+
+df2$price <- rf.pred.real
+
+names(df2[2]) <- paste("price predictions")
+
+
+#importance(rf.real)
+
+
+
+
+
+
+# Creating a data frame of just the ID and Price prediction
+
+testing_predictions_4210010 <- data.frame("id" = df2$id, "Price Predictions" = rf.pred.real)
+testing_predictions_4210010["student_id"] = "4210010"
+testing_predictions_4210010
+
+
+#Load the data frame of predictions to a csv file
+write.csv(testing_predictions_4210010,"/Users/NickC/Desktop/testing_predictions_4210010.csv", row.names = TRUE)
+
+
